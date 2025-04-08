@@ -74,21 +74,21 @@ Resources:
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
       ContainerDefinitions:
         - Name: !Ref ContainerName
-          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}:latest
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}:latest"
           PortMappings:
             - ContainerPort: !Ref ContainerPort
           Essential: true
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group: !Ref CloudWatchLogsGroup
+              awslogs-group: !Sub "/ecs/${ECSClusterName}"
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
 
   # ECS Service
   ECSService:
     Type: AWS::ECS::Service
-    DependsOn: [ALBListener]
+    DependsOn: ALBListener
     Properties:
       Cluster: !Ref ECSCluster
       ServiceName: !Ref ServiceName
@@ -237,7 +237,7 @@ Resources:
   CloudWatchLogsGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /ecs/${ECSClusterName}
+      LogGroupName: !Sub "/ecs/${ECSClusterName}"
       RetentionInDays: 7
 
   # CodeBuild Project
@@ -255,35 +255,35 @@ Resources:
         PrivilegedMode: true
         EnvironmentVariables:
           - Name: REPOSITORY_URI
-            Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}
+            Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}"
           - Name: AWS_DEFAULT_REGION
             Value: !Ref AWS::Region
       Source:
         Type: CODEPIPELINE
-        BuildSpec: !Sub |
+        BuildSpec: |
           version: 0.2
           phases:
             pre_build:
               commands:
                 - echo Logging in to Amazon ECR...
                 - aws --version
-                - aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+                - aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
                 - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
                 - IMAGE_TAG=${COMMIT_HASH:=latest}
             build:
               commands:
                 - echo Build started on `date`
                 - echo Building the Docker image...
-                - docker build -t $REPOSITORY_URI:latest .
-                - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+                - docker build -t ${REPOSITORY_URI}:latest .
+                - docker tag ${REPOSITORY_URI}:latest ${REPOSITORY_URI}:${IMAGE_TAG}
             post_build:
               commands:
                 - echo Build completed on `date`
                 - echo Pushing the Docker images...
-                - docker push $REPOSITORY_URI:latest
-                - docker push $REPOSITORY_URI:$IMAGE_TAG
+                - docker push ${REPOSITORY_URI}:latest
+                - docker push ${REPOSITORY_URI}:${IMAGE_TAG}
                 - echo Writing image definitions file...
-                - printf '[{"name":"%s","imageUri":"%s"}]' "${ContainerName}" "$REPOSITORY_URI:latest" > imagedefinitions.json
+                - printf '[{"name":"%s","imageUri":"%s"}]' "${CONTAINER_NAME}" "${REPOSITORY_URI}:latest" > imagedefinitions.json
           artifacts:
             files:
               - imagedefinitions.json
@@ -381,8 +381,8 @@ Resources:
                   - s3:GetBucketVersioning
                   - s3:PutObject
                 Resource:
-                  - !Sub arn:aws:s3:::${ArtifactStoreBucket}
-                  - !Sub arn:aws:s3:::${ArtifactStoreBucket}/*
+                  - !Sub "arn:aws:s3:::${ArtifactStoreBucket}"
+                  - !Sub "arn:aws:s3:::${ArtifactStoreBucket}/*"
 
   # S3 Bucket for Artifact Store
   ArtifactStoreBucket:
