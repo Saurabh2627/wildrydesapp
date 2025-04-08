@@ -34,6 +34,10 @@ Parameters:
     Type: String
     Description: ECR repository name
     Default: wildrydes/repo
+  GitHubOwner:
+    Type: String
+    Description: GitHub repository owner
+    Default: Saurabh2627
 
 Resources:
   # VPC and Networking Resources
@@ -128,9 +132,17 @@ Resources:
       ImageScanningConfiguration:
         ScanOnPush: true
 
-  # Task Definition
-  TaskDefinition:
+  # CloudWatch Logs Group
+  CloudWatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ECSClusterName}"
+      RetentionInDays: 7
+
+  # Initial Task Definition (Minimal for ECS Service Creation)
+  InitialTaskDefinition:
     Type: AWS::ECS::TaskDefinition
+    DependsOn: CloudWatchLogsGroup
     Properties:
       Family: wildrydes-task
       NetworkMode: awsvpc
@@ -142,7 +154,8 @@ Resources:
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
       ContainerDefinitions:
         - Name: !Ref ContainerName
-          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}:latest"
+          # Placeholder image; CodePipeline will deploy the real image
+          Image: 'amazon/amazon-ecs-sample'
           PortMappings:
             - ContainerPort: !Ref ContainerPort
           Essential: true
@@ -152,35 +165,6 @@ Resources:
               awslogs-group: !Sub "/ecs/${ECSClusterName}"
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
-
-  # ECS Service
-  ECSService:
-    Type: AWS::ECS::Service
-    DependsOn: ALBListener
-    Properties:
-      Cluster: !Ref ECSCluster
-      ServiceName: !Ref ServiceName
-      LaunchType: FARGATE
-      DeploymentConfiguration:
-        MaximumPercent: 200
-        MinimumHealthyPercent: 75
-        DeploymentCircuitBreaker:
-          Enable: true
-          Rollback: true
-      DesiredCount: 2
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          AssignPublicIp: ENABLED
-          SecurityGroups:
-            - !Ref ECSSecurityGroup
-          Subnets:
-            - !Ref PublicSubnet1
-            - !Ref PublicSubnet2
-      LoadBalancers:
-        - ContainerName: !Ref ContainerName
-          ContainerPort: !Ref ContainerPort
-          TargetGroupArn: !Ref ECSTargetGroup
-      TaskDefinition: !Ref TaskDefinition
 
   # Application Load Balancer
   ALB:
@@ -194,6 +178,21 @@ Resources:
       SecurityGroups:
         - !Ref ALBSecurityGroup
 
+  # ALB Target Group with Health Check
+  ECSTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 60
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 30
+      HealthyThresholdCount: 3
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref VPC
+
   # ALB Listener
   ALBListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -204,21 +203,6 @@ Resources:
       LoadBalancerArn: !Ref ALB
       Port: 80
       Protocol: HTTP
-
-  # ALB Target Group
-  ECSTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      HealthCheckIntervalSeconds: 30
-      HealthCheckPath: /
-      HealthCheckProtocol: HTTP
-      HealthCheckTimeoutSeconds: 10
-      HealthyThresholdCount: 3
-      Port: 80
-      Protocol: HTTP
-      TargetType: ip
-      UnhealthyThresholdCount: 3
-      VpcId: !Ref VPC
 
   # Security Groups
   ALBSecurityGroup:
@@ -243,6 +227,40 @@ Resources:
           ToPort: !Ref ContainerPort
           SourceSecurityGroupId: !Ref ALBSecurityGroup
 
+  # ECS Service (References Initial Task Definition)
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ALBListener
+      - ECSTargetGroup
+      - CloudWatchLogsGroup
+      - InitialTaskDefinition
+    Properties:
+      Cluster: !Ref ECSCluster
+      ServiceName: !Ref ServiceName
+      TaskDefinition: !Ref InitialTaskDefinition
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      HealthCheckGracePeriodSeconds: 120
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - !Ref PublicSubnet1
+            - !Ref PublicSubnet2
+      LoadBalancers:
+        - ContainerName: !Ref ContainerName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref ECSTargetGroup
+
   # IAM Roles
   ECSExecutionRole:
     Type: AWS::IAM::Role
@@ -252,8 +270,8 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: [ecs-tasks.amazonaws.com]
-            Action: ['sts:AssumeRole']
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
       Path: /
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
@@ -266,8 +284,8 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: [ecs-tasks.amazonaws.com]
-            Action: ['sts:AssumeRole']
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
       Path: /
 
   CodeBuildServiceRole:
@@ -278,8 +296,8 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: [codebuild.amazonaws.com]
-            Action: ['sts:AssumeRole']
+              Service: codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
       Path: /
       Policies:
         - PolicyName: CodeBuildAccess
@@ -305,13 +323,6 @@ Resources:
                   - ecr:PutImage
                 Resource: '*'
 
-  # CloudWatch Logs Group
-  CloudWatchLogsGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/ecs/${ECSClusterName}"
-      RetentionInDays: 7
-
   # CodeBuild Project
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
@@ -330,6 +341,18 @@ Resources:
             Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}"
           - Name: AWS_DEFAULT_REGION
             Value: !Ref AWS::Region
+          - Name: CONTAINER_NAME
+            Value: !Ref ContainerName
+          - Name: ECS_CLUSTER_NAME
+            Value: !Ref ECSClusterName
+          - Name: ECS_SERVICE_NAME
+            Value: !Ref ServiceName
+          - Name: EXECUTION_ROLE_ARN
+            Value: !GetAtt ECSExecutionRole.Arn
+          - Name: TASK_ROLE_ARN
+            Value: !GetAtt ECSTaskRole.Arn
+          - Name: CONTAINER_PORT
+            Value: !Ref ContainerPort
       Source:
         Type: CODEPIPELINE
         BuildSpec: |
@@ -339,23 +362,23 @@ Resources:
               commands:
                 - echo Logging in to Amazon ECR...
                 - aws --version
-                - aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${REPOSITORY_URI}
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $REPOSITORY_URI
                 - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
                 - IMAGE_TAG=${COMMIT_HASH:=latest}
             build:
               commands:
                 - echo Build started on `date`
                 - echo Building the Docker image...
-                - docker build -t ${REPOSITORY_URI}:latest .
-                - docker tag ${REPOSITORY_URI}:latest ${REPOSITORY_URI}:${IMAGE_TAG}
+                - docker build -t $REPOSITORY_URI:latest .
+                - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
             post_build:
               commands:
                 - echo Build completed on `date`
                 - echo Pushing the Docker images...
-                - docker push ${REPOSITORY_URI}:latest
-                - docker push ${REPOSITORY_URI}:${IMAGE_TAG}
+                - docker push $REPOSITORY_URI:latest
+                - docker push $REPOSITORY_URI:$IMAGE_TAG
                 - echo Writing image definitions file...
-                - printf '[{"name":"%s","imageUri":"%s"}]' "${CONTAINER_NAME}" "${REPOSITORY_URI}:latest" > imagedefinitions.json
+                - printf '[{"name":"%s","imageUri":"%s"}]' "$CONTAINER_NAME" "$REPOSITORY_URI:latest" > imagedefinitions.json
           artifacts:
             files:
               - imagedefinitions.json
@@ -379,8 +402,8 @@ Resources:
                 Version: '1'
                 Provider: GitHub
               Configuration:
-                Owner: wildrydes
-                Repo: application-repo
+                Owner: !Ref GitHubOwner
+                Repo: wildrydesapp
                 Branch: !Ref GitHubBranch
                 OAuthToken: !Ref GitHubToken
               OutputArtifacts:
@@ -426,8 +449,8 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: [codepipeline.amazonaws.com]
-            Action: ['sts:AssumeRole']
+              Service: codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
       Path: /
       Policies:
         - PolicyName: CodePipelineAccess
@@ -445,15 +468,17 @@ Resources:
                   - ecs:RegisterTaskDefinition
                   - ecs:UpdateService
                   - iam:PassRole
-                Resource: '*'
-              - Effect: Allow
-                Action:
+                  - s3:PutObject
                   - s3:GetObject
                   - s3:GetObjectVersion
                   - s3:GetBucketVersioning
+                Resource: '*'
+              - Effect: Allow
+                Action:
                   - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
                 Resource:
-                  - !Sub "arn:aws:s3:::${ArtifactStoreBucket}"
                   - !Sub "arn:aws:s3:::${ArtifactStoreBucket}/*"
 
   # S3 Bucket for Artifact Store
