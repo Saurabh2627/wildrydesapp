@@ -139,7 +139,7 @@ Resources:
       LogGroupName: !Sub "/ecs/${ECSClusterName}"
       RetentionInDays: 7
 
-  # Initial Task Definition (Minimal for ECS Service Creation)
+  # Initial Task Definition
   InitialTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     DependsOn: CloudWatchLogsGroup
@@ -330,7 +330,9 @@ Resources:
                   - s3:GetObject
                   - s3:GetObjectVersion
                   - s3:PutObject
+                  - s3:ListBucket
                 Resource:
+                  - !Sub "arn:aws:s3:::${ArtifactStoreBucket}"
                   - !Sub "arn:aws:s3:::${ArtifactStoreBucket}/*"
 
   # CodeBuild Project
@@ -489,12 +491,15 @@ Resources:
                   - s3:PutObject
                   - s3:GetObject
                   - s3:GetObjectVersion
+                  - s3:ListBucket
                 Resource:
+                  - !Sub "arn:aws:s3:::${ArtifactStoreBucket}"
                   - !Sub "arn:aws:s3:::${ArtifactStoreBucket}/*"
 
   # S3 Bucket for Artifact Store
   ArtifactStoreBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
     Properties:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -502,6 +507,40 @@ Resources:
               SSEAlgorithm: AES256
       VersioningConfiguration:
         Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanUpOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  # S3 Bucket Policy
+  ArtifactStoreBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactStoreBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !GetAtt CodeBuildServiceRole.Arn
+                - !GetAtt CodePipelineRole.Arn
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${ArtifactStoreBucket}"
+              - !Sub "arn:aws:s3:::${ArtifactStoreBucket}/*"
 
   # CloudWatch Alarms for Pipeline
   BuildFailureAlarm:
@@ -560,3 +599,6 @@ Outputs:
   CodePipelineName:
     Description: Name of the CodePipeline
     Value: !Ref CodePipeline
+  ArtifactStoreBucketName:
+    Description: Name of the S3 artifact store bucket
+    Value: !Ref ArtifactStoreBucket
