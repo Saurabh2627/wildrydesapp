@@ -154,7 +154,6 @@ Resources:
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
       ContainerDefinitions:
         - Name: !Ref ContainerName
-          # Placeholder image; CodePipeline will deploy the real image
           Image: 'amazon/amazon-ecs-sample'
           PortMappings:
             - ContainerPort: !Ref ContainerPort
@@ -227,7 +226,7 @@ Resources:
           ToPort: !Ref ContainerPort
           SourceSecurityGroupId: !Ref ALBSecurityGroup
 
-  # ECS Service (References Initial Task Definition)
+  # ECS Service
   ECSService:
     Type: AWS::ECS::Service
     DependsOn:
@@ -321,7 +320,18 @@ Resources:
                   - ecr:UploadLayerPart
                   - ecr:CompleteLayerUpload
                   - ecr:PutImage
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:ListBucket
                 Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${ArtifactStoreBucket}/*"
 
   # CodeBuild Project
   CodeBuildProject:
@@ -472,6 +482,7 @@ Resources:
                   - s3:GetObject
                   - s3:GetObjectVersion
                   - s3:GetBucketVersioning
+                  - s3:ListBucket
                 Resource: '*'
               - Effect: Allow
                 Action:
